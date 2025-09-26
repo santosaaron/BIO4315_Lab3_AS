@@ -265,5 +265,3 @@ plotTracks(list(axis_track_cds, aln_track_cds),
           to = max(end(gr_alns_cds)),
           main = "Longest Contig Alignments to the Cds")
 ```
-
-
