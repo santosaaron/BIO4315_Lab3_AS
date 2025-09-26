@@ -1,0 +1,269 @@
+---
+title: "lab3_assembly_annotation2.0"
+output: html_document
+date: "2025-09-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#SETUP
+```{bash, eval = FALSE}
+docker pull quay.io/biocontainers/quast:5.3.0--py313pl5321h5ca1c30_2
+```
+
+### Load the packages
+```{r}
+library("IRanges")
+library("GenomicRanges")
+library("Rsamtools")
+library("GenomicAlignments")
+library("Gviz")
+```
+
+### Download the reference genome (Recall: fna = reference)
+```{bash, eval = FALSE}
+curl -O https://ftp.ncbi.nlm.nih.gov/genomes/refseq/fungi/Saccharomyces_cerevisiae/latest_assembly_versions/GCF_000146045.2_R64/GCF_000146045.2_R64_genomic.fna.gz
+
+gunzip GCF_000146045.2_R64_genomic.fna.gz
+```
+
+### Download the genome annotations (Recall: gff = annotations)
+```{bash, eval = FALSE}
+curl -O https://ftp.ncbi.nlm.nih.gov/genomes/refseq/fungi/Saccharomyces_cerevisiae/latest_assembly_versions/GCF_000146045.2_R64/GCF_000146045.2_R64_genomic.gff.gz
+
+gunzip GCF_000146045.2_R64_genomic.gff.gz
+```
+
+# 4 - ASSEMBLE GENOME (NOTICE MISTAKE IN .fastq file -> changed to end in 001)
+(takes a while)
+```{bash, eval = FALSE}
+flye --nano-raw ERR1539001.fastq --out-dir flye_output --threads 8 --genome-size 12m
+```
+
+# QUESTION 1
+**JUST MANUALLY GO TO END
+Assembly statistics:
+
+	Total length:	12706271
+	Fragments:	354
+	Fragments N50:	52932
+	Largest frg:	302366
+	Scaffolds:	0
+	Mean coverage:	8
+	
+Based on the summary alignment statistics (found at the end of the flye_output/flye.log), we must look at a few things to consider if the coverage of the assembly is adequate. Given the total fragments is 354 and the N50 (when thinking of it as the mean/median of fragment lengths) is not even half the total length of the genome, this indicates low contiguous assemblies. Additionally, the mean coverage is only 8 (ie each base on average is seen in 8 reads), further supporting that coverage is not adequate and rather low
+
+# 5 - EVALUATE ASSEMBLY
+### 5.1 USING BUSCO (takes a while)
+```{bash, eval = FALSE}
+docker run --rm \
+  -v "$PWD":/data \
+  -w /data \
+  ezlabgva/busco:v6.0.0_cv1 \
+  busco -i assembly.fasta -o busco_output -l saccharomycetaceae_odb12 -m genome -c 8
+```
+# QUESTION 2
+**FROM TXT FILE
+***** Results: *****
+
+	C:33.7%[S:33.6%,D:0.1%],F:0.4%,M:65.9%,n:3282,E:5.2%	   
+	1107	Complete BUSCOs (C)	(of which 58 contain internal stop codons)		   
+	1104	Complete and single-copy BUSCOs (S)	   
+	3	Complete and duplicated BUSCOs (D)	   
+	13	Fragmented BUSCOs (F)			   
+	2162	Missing BUSCOs (M)			   
+	3282	Total BUSCO groups searched		   
+
+Assembly Statistics:
+	354	Number of scaffolds
+	354	Number of contigs
+	12706271	Total length
+	0.000%	Percent gaps
+	52 kbp	Scaffold N50
+	52 kbp	Contigs N50
+	
+i) BUSCO SCORES
+C:33.7%[S:33.6%,D:0.1%],F:0.4%,M:65.9%,n:3282,E:5.2%
+C - lvl of completeness (S = unique, D = duplicated)
+The gene is uniquely found within 33.6% of the comparison of assemblies and has minimal duplication
+F - the lvl of fragmentation = 0.4% -> limited fragmentation means more complete assemblies
+M - lvl of how much the assembly is missing = 65.9% -> huge proportion of gene is unknown 
+Given the coverage, although the assembly of the gene that is known is unique for the most part, a large portion of the assembly is unknown indicating coverage is limited and is not the best
+
+ii/iii) ASSEMBLY STATISTICS
+N50 is 52kbp (scaffolds and contigs). Compared to flye results, it is about the same which again indicates low contiguity and therefore, low coverage.
+Total assembly length is 12706271
+
+### 5.2 USING QUAST (fast)
+```{bash, eval = FALSE}
+docker run --rm -v "$(pwd)":/data -w /data quay.io/biocontainers/quast:5.3.0--py313pl5321h5ca1c30_2 \
+  quast.py assembly.fasta \
+  -r GCF_000146045.2_R64_genomic.fna \
+  -g GCF_000146045.2_R64_genomic.gff \
+  -o quast_output
+```
+
+# QUESTION 3
+
+Alignment-based statistics	assembly
+Genome fraction (%)	0.529
+Duplication ratio	1.157
+# genomic features	160 + 46 part
+Largest alignment	34624
+Total aligned length	74454
+NGA50	-
+LGA50	-
+Misassemblies	
+# misassemblies	0
+Misassembled contigs length	0
+Per base quality	
+# mismatches per 100 kbp	1177.91
+# indels per 100 kbp	2815.16
+# N's per 100 kbp	0
+Statistics without reference	
+# contigs	354
+Largest contig	302366
+Total length	12706271
+Total length (>= 1000 bp)	12706271
+Total length (>= 10000 bp)	12450048
+Total length (>= 50000 bp)	6677515
+
+i) The genome fraction is 0.529 (52.9%). In comparison to BUSCO (which only had a completeness score of 33%), QUAST did a better job at aligning the reference genome to the assembly
+ii) The duplication ratio is 1.157
+iii) There were 0 misassemblies. This means the contigs were aligned to the reference genome w/o errors. Furthermore, this insinuates the reference genome is a good representation of the strain's genomic structure.
+
+# 6 - ANNOTATING
+
+# QUESTION 4
+```{r}
+library(Biostrings)
+
+#load the full genome FASTA
+genome <- readDNAStringSet("/Users/aaronsantos/GCF_000146045.2_R64_genomic.fna")
+
+#extract chrom
+chr1 <- genome[grep("chromosome I", names(genome), ignore.case = TRUE)]
+
+#save
+writeXStringSet(chr1, "R64_chr1.fna")
+```
+
+### 6.3
+```{bash, eval = FALSE}
+minimap2 -t 8 -ax asm5 R64_chr1.fna ./flye_output/assembly.fasta > contig_vs_chr1.sam
+```
+
+### convert sam to bam
+```{bash, eval = FALSE}
+samtools view -bS contig_vs_chr1.sam > alignment.bam
+```
+
+### sort aligned contigs (ie bam file)
+```{bash, eval= FALSE}
+samtools sort alignment.bam -o alignment.sorted.bam
+```
+
+### index sorted bam file
+```{bash, eval = FALSE}
+samtools index alignment.sorted.bam
+```
+
+### visualize alignment w/GRanges
+###import bam file + convert into GRanges obj
+```{r}
+bam_file <- "alignment.sorted.bam"
+
+#open connection to BAM file
+bam <- BamFile(bam_file)
+
+#read all alignments (already restricted to chr1)
+alns <- readGAlignments(bam)
+
+#convert to GRanges object
+gr_alns <- granges(alns)
+```
+###create tracks
+```{r}
+#disable uscs-file name syntax
+options(ucscChromosomeNames=FALSE)
+
+aln_track <- AnnotationTrack(gr_alns, name = "Contigs", genome = "sacCer3", chromosome = "NC_001133.9")
+
+# Add genome axis for scale
+axis_track <- GenomeAxisTrack()
+```
+###visualize alignment
+```{r}
+plotTracks(list(axis_track, aln_track),
+           from = min(start(gr_alns)),
+           to = max(end(gr_alns)),
+           main = "Contig Alignments to Chromosome 1")
+```
+
+# QUESTION 5
+There were 2 contigs aligned to the chromosome
+
+# QUESTION 6
+```{r}
+assembly <- readDNAStringSet("assembly.fasta")
+
+#find the longest contig
+lengths <- width(assembly)
+longest_contig2.0 <- assembly[which.max(lengths)]
+
+#save the longest contig
+writeXStringSet(longest_contig2.0, "longest_contig.fasta")
+```
+
+### Aligning CDSs to longest contig
+```{bash, eval = FALSE}
+minimap2 -ax splice -uf --secondary=no longest_contig.fasta GCF_000146045.2_R64_genomic.fna > cds_aln.sam
+```
+
+### QUESTION 7
+```{bash, eval=FALSE}
+
+#convert sam to bam file
+samtools view -bS cds_aln.sam > cds_aln.bam
+
+#sort aligned contigs
+samtools sort cds_aln.bam -o cds_aln.sorted.bam
+
+#index sorted bam -> creates .bai file
+samtools index cds_aln.sorted.bam
+```
+
+### QUESTION 8
+```{r}
+#file path
+bam_cds_file <- "cds_aln.sorted.bam"
+
+#open cnnxn to BAM file
+bam_cds <- BamFile(bam_cds_file)
+
+#read all alignments 
+alns_cds <- readGAlignments(bam_cds)
+
+#convert to GRanges object
+gr_alns_cds <- granges(alns_cds)
+
+options(ucscChromosomeNames = FALSE)
+
+#checking name for chromosome parameter
+unique(seqnames(gr_alns_cds))
+
+#create tracks
+aln_track_cds <- AnnotationTrack(gr_alns_cds, name = "Contigs", genome = "sacCer3", chromosome = "contig_142", stacking = "dense")
+
+axis_track_cds <- GenomeAxisTrack()
+
+#plot
+plotTracks(list(axis_track_cds, aln_track_cds),
+          from = min(start(gr_alns_cds)),
+          to = max(end(gr_alns_cds)),
+          main = "Longest Contig Alignments to the Cds")
+```
+
+
